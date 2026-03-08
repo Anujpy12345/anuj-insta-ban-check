@@ -1,77 +1,80 @@
-from http.server import BaseHTTPRequestHandler
 import requests
 import json
+import uuid
+import hashlib
+from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Extract username from query (?u=username)
         query = parse_qs(urlparse(self.path).query)
         username = query.get('u', [None])[0]
 
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
-        # CORS allow taaki tum ise kahin bhi use kar sako
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
 
         if not username:
-            error_res = {
-                "status": "error",
-                "message": "Please provide a username. Usage: /api?u=username",
-                "dev": "@PyAnuj"
-            }
-            self.wfile.write(json.dumps(error_res).encode())
+            self.wfile.write(json.dumps({"error": "Usage: /api?u=username", "dev": "@PyAnuj"}).encode())
             return
 
-        # VIP Headers for bypassing simple blocks
+        # --- APKI SCRIPT SE NIKALE GAYE RESOURCES ---
+        
+        # 1. Device IDs Generate karna (Aapki script ka logic)
+        device_id = 'android-' + hashlib.md5(str(uuid.uuid4()).encode()).hexdigest()[:16]
+        guid = str(uuid.uuid4())
+        adid = str(uuid.uuid4())
+
+        # 2. Mobile App Headers (Exact from your script)
         headers = {
             'User-Agent': 'Instagram 329.0.0.0.0 Android (33/13; 480dpi; 1080x2268; samsung; SM-S901E; r9q; qcom; en_US; 525000000)',
             'X-IG-App-ID': '936619743392459',
-            'X-ASBD-ID': '129477',
-            'X-IG-WWW-Claim': '0',
-            'Accept': '*/*',
+            'X-IG-Capabilities': '3brTvx0=',
+            'X-IG-Connection-Type': 'WIFI',
             'Accept-Language': 'en-US,en;q=0.9',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         }
 
-        url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
+        # 3. Recovery Flow Data (Aapki script ka main logic)
+        # Ye check karta hai ki account password reset ke liye available hai ya nahi
+        payload = {
+            'signed_body': '0d067c2f86cac2c17d655631c9cec2402012fb0a329bcafb3b1f4c0bb56b1f1f.' + json.dumps({
+                '_csrftoken': '9y3N5kLqzialQA7z96AMiyAKLMBWpqVj', # Dummy CSRF
+                'adid': adid,
+                'guid': guid,
+                'device_id': device_id,
+                'query': username,
+                'client_input_params': json.dumps({'email_or_username': username})
+            }),
+            'ig_sig_key_version': '4',
+        }
 
         try:
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                user = data.get('data', {}).get('user')
-                
-                if user:
-                    result = {
-                        "status": "success",
-                        "account_status": "Active ✅",
-                        "data": {
-                            "username": username,
-                            "id": user.get('id'),
-                            "full_name": user.get('full_name'),
-                            "is_private": user.get('is_private'),
-                            "is_verified": user.get('is_verified'),
-                            "followers": user.get('edge_followed_by', {}).get('count'),
-                            "following": user.get('edge_follow', {}).get('count')
-                        },
-                        "credits": {
-                            "dev": "@PyAnuj",
-                            "channel": "@itz_4nuj1"
-                        }
-                    }
-                else:
-                    result = {"status": "fail", "account_status": "Banned/Deleted ❌"}
-            
-            elif response.status_code == 404:
-                result = {"status": "fail", "account_status": "Banned/Not Found ❌"}
-            
-            elif response.status_code == 429:
-                result = {"status": "error", "message": "Rate Limited by Instagram. Use Proxy."}
-            
+            # Step 1: Recovery Flow Check (More stable than profile info)
+            recovery_url = 'https://i.instagram.com/api/v1/accounts/send_recovery_flow_email/'
+            response = requests.post(recovery_url, headers=headers, data=payload, timeout=10)
+            res_json = response.json()
+
+            # Logic: Agar "email_sent" ya success message hai toh Active hai
+            if response.status_code == 200 or "email_sent" in str(res_json):
+                result = {
+                    "status": "Active ✅",
+                    "username": username,
+                    "method": "Mobile Recovery Flow",
+                    "dev": "@PyAnuj",
+                    "channel": "@itz_4nuj1"
+                }
+            elif "user_not_found" in str(res_json):
+                result = {"status": "Banned/Not Found ❌", "username": username}
             else:
-                result = {"status": "error", "message": f"Instagram returned status {response.status_code}"}
+                # Fallback: Agar recovery flow fail ho toh normal info check karein
+                info_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
+                info_res = requests.get(info_url, headers=headers, timeout=5)
+                if info_res.status_code == 200:
+                    result = {"status": "Active ✅", "username": username}
+                else:
+                    result = {"status": "Banned ❌", "username": username}
 
         except Exception as e:
             result = {"status": "error", "message": str(e)}
